@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+import time
 
 CROSS = "Cross"
 X = "X"
@@ -15,6 +16,9 @@ UNDECIDED = "UNDECIDED"
 
 EPSILON = 1e-9  # 두 점수의 차이가 이보다 작으면 동점으로 본다
 MANUAL_SIZE = 3  # 모드 1에서 손으로 넣는 크기
+PERF_SIZES = (3, 5, 13, 25)
+REPEAT = 10  # 크기별 측정 반복 횟수
+WARMUP = 20  # 측정 전에 미리 돌려 버리는 횟수
 DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
 FILTER_KEY = re.compile(r"size_(\d+)")
 PATTERN_KEY = re.compile(r"size_(\d+)_(\d+)")
@@ -102,6 +106,48 @@ def compare_scores(score_a, score_b):
     return "A" if score_a > score_b else "B"
 
 
+def make_pattern(label, size):
+    """크기 size(홀수)의 십자가 또는 X 패턴을 만든다."""
+    matrix = Matrix(size)
+    middle = size // 2
+    for i in range(size):
+        if label == CROSS:
+            matrix.set(middle, i, 1.0)
+            matrix.set(i, middle, 1.0)
+        else:
+            matrix.set(i, i, 1.0)
+            matrix.set(i, size - 1 - i, 1.0)
+    return matrix
+
+
+def measure_ms(func, *args):
+    """func 1회 호출의 평균 시간(ms). 연산 구간만 재서 REPEAT번 평균을 낸다."""
+    for _ in range(WARMUP):  # 인터프리터가 함수에 익숙해지는 처음 몇 번은 뺀다
+        func(*args)
+    total = 0.0
+    for _ in range(REPEAT):
+        start = time.perf_counter()
+        func(*args)
+        total += time.perf_counter() - start
+    return total / REPEAT * 1000
+
+
+def print_perf_table(rows):
+    """rows = [(크기, 평균 ms), ...]"""
+    print(f"{'크기':<8}{'평균 시간(ms)':>14}{'연산 횟수(N²)':>14}")
+    print("-" * 40)
+    for size, elapsed in rows:
+        print(f"{f'{size}×{size}':<10}{elapsed:>14.5f}{size * size:>16}")
+
+
+def run_perf_all():
+    """표준 크기 전부를 같은 방식의 입력(생성한 십자가 × X 필터)으로 잰다."""
+    rows = []
+    for size in PERF_SIZES:
+        rows.append((size, measure_ms(mac, make_pattern(CROSS, size), make_pattern(X, size))))
+    print_perf_table(rows)
+
+
 def section(title):
     print("#" + "-" * 40)
     print(f"# {title}")
@@ -150,13 +196,18 @@ def run_manual():
     section("[3] MAC 결과")
     score_a = mac(pattern, filter_a)
     score_b = mac(pattern, filter_b)
+    elapsed = measure_ms(mac, pattern, filter_a)
     print(f"A 점수: {score_a}")
     print(f"B 점수: {score_b}")
+    print(f"연산 시간(평균/{REPEAT}회): {elapsed:.5f} ms")
     verdict = compare_scores(score_a, score_b)
     if verdict == UNDECIDED:
         print("판정: 판정 불가 (|A-B| < 1e-9)")
     else:
         print(f"판정: {verdict}")
+
+    section(f"[4] 성능 분석 (평균/{REPEAT}회)")
+    print_perf_table([(MANUAL_SIZE, elapsed)])
 
 
 def load_json(path):
@@ -289,6 +340,9 @@ def run_json():
         reason = analyze_case(key, case, filters, filter_errors)
         if reason is not None:
             failures.append((key, reason))
+
+    section(f"[3] 성능 분석 (평균/{REPEAT}회)")
+    run_perf_all()
 
     print_summary(len(patterns), failures)
 
