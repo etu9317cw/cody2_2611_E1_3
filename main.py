@@ -17,6 +17,7 @@ UNDECIDED = "UNDECIDED"
 EPSILON = 1e-9  # 두 점수의 차이가 이보다 작으면 동점으로 본다
 MANUAL_SIZE = 3  # 모드 1에서 손으로 넣는 크기
 PERF_SIZES = (3, 5, 13, 25)
+MAX_GEN_SIZE = 99  # 패턴 생성기가 받는 가장 큰 크기
 REPEAT = 10  # 크기별 측정 반복 횟수
 WARMUP = 20  # 측정 전에 미리 돌려 버리는 횟수
 DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
@@ -97,6 +98,19 @@ def mac(pattern, filt):
     return score
 
 
+def flatten(matrix):
+    """2차원 배열을 길이 N²의 1차원 배열로 편다."""
+    return [value for row in matrix.rows for value in row]
+
+
+def mac_flat(a, b):
+    """펼친 배열로 하는 MAC. 위치를 r, c 대신 인덱스 하나로 찾는다."""
+    score = 0.0
+    for i in range(len(a)):
+        score += a[i] * b[i]
+    return score
+
+
 def compare_scores(score_a, score_b):
     """"A", "B" 또는 UNDECIDED. 차이가 EPSILON보다 작으면 동점으로 본다."""
     if not (math.isfinite(score_a) and math.isfinite(score_b)):
@@ -140,12 +154,28 @@ def print_perf_table(rows):
         print(f"{f'{size}×{size}':<10}{elapsed:>14.5f}{size * size:>16}")
 
 
-def run_perf_all():
-    """표준 크기 전부를 같은 방식의 입력(생성한 십자가 × X 필터)으로 잰다."""
-    rows = []
-    for size in PERF_SIZES:
-        rows.append((size, measure_ms(mac, make_pattern(CROSS, size), make_pattern(X, size))))
-    print_perf_table(rows)
+def print_flat_table(rows):
+    """rows = [(크기, 2차원 ms, 1차원 ms), ...]"""
+    print(f"{'크기':<8}{'2차원(ms)':>12}{'1차원(ms)':>12}{'1차원/2차원':>12}")
+    print("-" * 46)
+    for size, nested, flat in rows:
+        print(f"{f'{size}×{size}':<10}{nested:>13.5f}{flat:>13.5f}{flat / nested:>13.2f}")
+
+
+def run_perf(sizes):
+    """크기별로 같은 입력(생성한 십자가 × X 필터)을 2차원·1차원 두 방식으로 잰다."""
+    table = []
+    compare = []
+    for size in sizes:
+        pattern, filt = make_pattern(CROSS, size), make_pattern(X, size)
+        nested = measure_ms(mac, pattern, filt)
+        flat = measure_ms(mac_flat, flatten(pattern), flatten(filt))
+        table.append((size, nested))
+        compare.append((size, nested, flat))
+    print_perf_table(table)
+    print()
+    print("[보너스] 2차원 배열 vs 1차원 배열 (같은 입력, 같은 반복 횟수)")
+    print_flat_table(compare)
 
 
 def section(title):
@@ -167,11 +197,21 @@ def parse_row(line, size):
 
 
 def read_matrix(title, size=MANUAL_SIZE):
-    """size줄을 받는다. 틀린 줄은 안내한 뒤 그 줄만 다시 받는다."""
-    print(f"{title} ({size}줄 입력, 공백 구분)")
+    """size줄을 받는다. 틀린 줄은 안내한 뒤 그 줄만 다시 받는다.
+
+    첫 줄에 cross 또는 x를 쓰면 패턴 생성기가 채운다.
+    """
+    print(f"{title} ({size}줄 입력, 공백 구분 · 첫 줄에 cross 또는 x를 쓰면 자동 생성)")
     rows = []
     while len(rows) < size:
-        row = parse_row(input(), size)
+        line = input()
+        label = normalize_label(line)
+        if label is not None and not rows:
+            matrix = make_pattern(label, size)
+            print(f"✓ {label} 패턴 자동 생성")
+            matrix.show()
+            return matrix
+        row = parse_row(line, size)
         if row is None:
             print(f"입력 형식 오류: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
                   f" ({len(rows) + 1}번째 줄을 다시 입력)")
@@ -342,20 +382,55 @@ def run_json():
             failures.append((key, reason))
 
     section(f"[3] 성능 분석 (평균/{REPEAT}회)")
-    run_perf_all()
+    run_perf(PERF_SIZES)
 
     print_summary(len(patterns), failures)
+
+
+def read_size():
+    """패턴 크기를 받는다. 가운데 줄이 있어야 하므로 홀수만 받는다."""
+    while True:
+        raw = input(f"크기 N (3~{MAX_GEN_SIZE} 홀수): ").strip()
+        if raw.isdecimal() and 3 <= int(raw) <= MAX_GEN_SIZE and int(raw) % 2 == 1:
+            return int(raw)
+        print(f"입력 오류: 3~{MAX_GEN_SIZE} 사이의 홀수를 입력하세요.")
+
+
+def run_generator():
+    """보너스: 크기 N의 패턴을 만들어 판정과 성능 분석에 쓴다."""
+    section("[1] 크기 입력")
+    size = read_size()
+    cross, x_shape = make_pattern(CROSS, size), make_pattern(X, size)
+
+    section("[2] 생성된 패턴")
+    for label, matrix in ((CROSS, cross), (X, x_shape)):
+        print(f"{label}:")
+        matrix.show()
+
+    section("[3] MAC 결과")
+    for label, matrix in ((CROSS, cross), (X, x_shape)):
+        cross_score = mac(matrix, cross)
+        x_score = mac(matrix, x_shape)
+        verdict = {"A": CROSS, "B": X, UNDECIDED: UNDECIDED}[compare_scores(cross_score, x_score)]
+        print(f"{label} 패턴 → Cross 점수: {cross_score} | X 점수: {x_score} | 판정: {verdict}")
+
+    section(f"[4] 성능 분석 (평균/{REPEAT}회)")
+    run_perf([size])
 
 
 def select_mode():
     print("[모드 선택]")
     print("1. 사용자 입력 (3x3)")
     print("2. data.json 분석")
+    print("3. 패턴 생성기 (보너스)")
     while True:
         choice = input("선택: ").strip()
-        if choice in ("1", "2"):
+        if choice in MODES:
             return choice
-        print("입력 오류: 1 또는 2를 입력하세요.")
+        print("입력 오류: 1, 2, 3 중에서 입력하세요.")
+
+
+MODES = {"1": run_manual, "2": run_json, "3": run_generator}
 
 
 def setup_console():
@@ -371,10 +446,7 @@ def main():
     setup_console()
     print("=== Mini NPU Simulator ===")
     try:
-        if select_mode() == "1":
-            run_manual()
-        else:
-            run_json()
+        MODES[select_mode()]()
     except (KeyboardInterrupt, EOFError):
         print("\n입력이 중단되어 프로그램을 종료합니다.")
 
