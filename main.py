@@ -11,6 +11,7 @@ X = "X"
 UNDECIDED = "UNDECIDED"
 
 EPSILON = 1e-9  # 두 점수의 차이가 이보다 작으면 동점으로 본다
+MANUAL_SIZE = 3  # 모드 1에서 손으로 넣는 크기
 
 # 파일마다 제각각인 라벨을 프로그램 안에서는 Cross / X 두 가지로만 쓴다.
 LABELS = {"+": CROSS, "cross": CROSS, "x": X}
@@ -95,6 +96,74 @@ def compare_scores(score_a, score_b):
     return "A" if score_a > score_b else "B"
 
 
+def section(title):
+    print("#" + "-" * 40)
+    print(f"# {title}")
+    print("#" + "-" * 40)
+
+
+def parse_row(line, size):
+    """공백으로 나뉜 숫자 size개를 float 목록으로. 형식이 틀리면 None."""
+    tokens = line.split()
+    if len(tokens) != size:
+        return None
+    try:
+        values = [float(token) for token in tokens]
+    except ValueError:
+        return None
+    return values if all(is_number(value) for value in values) else None
+
+
+def read_matrix(title, size=MANUAL_SIZE):
+    """size줄을 받는다. 틀린 줄은 안내한 뒤 그 줄만 다시 받는다."""
+    print(f"{title} ({size}줄 입력, 공백 구분)")
+    rows = []
+    while len(rows) < size:
+        row = parse_row(input(), size)
+        if row is None:
+            print(f"입력 형식 오류: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
+                  f" ({len(rows) + 1}번째 줄을 다시 입력)")
+            continue
+        rows.append(row)
+    return build_matrix(rows)
+
+
+def run_manual():
+    """모드 1: 필터 A, B와 패턴을 손으로 받아 판정한다."""
+    section("[1] 필터 입력")
+    filter_a = read_matrix("필터 A")
+    filter_b = read_matrix("필터 B")
+    print("✓ 필터 저장 완료")
+    for name, matrix in (("필터 A", filter_a), ("필터 B", filter_b)):
+        print(f"{name}:")
+        matrix.show()
+
+    section("[2] 패턴 입력")
+    pattern = read_matrix("패턴")
+
+    section("[3] MAC 결과")
+    score_a = mac(pattern, filter_a)
+    score_b = mac(pattern, filter_b)
+    print(f"A 점수: {score_a}")
+    print(f"B 점수: {score_b}")
+    verdict = compare_scores(score_a, score_b)
+    if verdict == UNDECIDED:
+        print("판정: 판정 불가 (|A-B| < 1e-9)")
+    else:
+        print(f"판정: {verdict}")
+
+
+def select_mode():
+    print("[모드 선택]")
+    print("1. 사용자 입력 (3x3)")
+    print("2. data.json 분석")
+    while True:
+        choice = input("선택: ").strip()
+        if choice in ("1", "2"):
+            return choice
+        print("입력 오류: 1 또는 2를 입력하세요.")
+
+
 def setup_console():
     """파이프·리다이렉트에서도 한글과 기호가 깨지지 않게 UTF-8로 맞춘다."""
     for stream in (sys.stdin, sys.stdout, sys.stderr):
@@ -107,6 +176,11 @@ def setup_console():
 def main():
     setup_console()
     print("=== Mini NPU Simulator ===")
+    try:
+        if select_mode() == "1":
+            run_manual()
+    except (KeyboardInterrupt, EOFError):
+        print("\n입력이 중단되어 프로그램을 종료합니다.")
 
 
 if __name__ == "__main__":
