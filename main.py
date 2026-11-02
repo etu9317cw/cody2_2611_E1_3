@@ -3,7 +3,10 @@
 실행: python main.py  (data.json은 이 파일과 같은 폴더)
 외부 라이브러리 없이 표준 라이브러리만 쓴다.
 """
+import json
 import math
+import os
+import re
 import sys
 
 CROSS = "Cross"
@@ -12,6 +15,9 @@ UNDECIDED = "UNDECIDED"
 
 EPSILON = 1e-9  # 두 점수의 차이가 이보다 작으면 동점으로 본다
 MANUAL_SIZE = 3  # 모드 1에서 손으로 넣는 크기
+DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
+FILTER_KEY = re.compile(r"size_(\d+)")
+PATTERN_KEY = re.compile(r"size_(\d+)_(\d+)")
 
 # 파일마다 제각각인 라벨을 프로그램 안에서는 Cross / X 두 가지로만 쓴다.
 LABELS = {"+": CROSS, "cross": CROSS, "x": X}
@@ -153,6 +159,140 @@ def run_manual():
         print(f"판정: {verdict}")
 
 
+def load_json(path):
+    """data.json을 읽는다. 읽을 수 없으면 사유를 알리고 None."""
+    try:
+        with open(path, encoding="utf-8-sig") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        print(f"✗ 파일이 없습니다: {path}")
+    except (OSError, ValueError, RecursionError) as error:
+        print(f"✗ 파일을 읽을 수 없습니다: {error}")
+    return None
+
+
+def read_filter_pair(entry, size):
+    """size_N 항목에서 Cross, X 필터를 읽는다. 문제가 있으면 ValueError(사유)."""
+    if not isinstance(entry, dict):
+        raise ValueError("필터 항목이 객체가 아닙니다")
+    pair = {}
+    for raw_label, rows in entry.items():
+        label = normalize_label(raw_label)
+        if label is None:
+            raise ValueError(f"알 수 없는 필터 라벨 '{raw_label}'")
+        matrix = build_matrix(rows)
+        if matrix.size != size:
+            raise ValueError(f"{raw_label} 필터 크기 {matrix.size}×{matrix.size}가 키의 N={size}와 다릅니다")
+        pair[label] = matrix
+    missing = [label for label in (CROSS, X) if label not in pair]
+    if missing:
+        raise ValueError(f"{', '.join(missing)} 필터가 없습니다")
+    return pair
+
+
+def load_filters(raw):
+    """필터를 크기별로 읽는다. 반환 = ({N: {라벨: Matrix}}, {N: 오류 사유})."""
+    filters, errors = {}, {}
+    if not isinstance(raw, dict):
+        print("✗ filters 항목이 없거나 객체가 아닙니다")
+        return filters, errors
+    for key, entry in raw.items():
+        match = FILTER_KEY.fullmatch(key)
+        if not match:
+            print(f"✗ {key}: 키 형식 오류 (size_N 형태가 아닙니다)")
+            continue
+        size = int(match.group(1))
+        try:
+            filters[size] = read_filter_pair(entry, size)
+            print(f"✓ {key:<7} 필터 로드 완료 (Cross, X)")
+        except ValueError as error:
+            errors[size] = str(error)
+            print(f"✗ {key}: {error}")
+    return filters, errors
+
+
+def load_case(key, case, filters, filter_errors):
+    """패턴 1건을 검증한다. 반환 = (패턴, expected, 필터 묶음). 문제가 있으면 ValueError(사유)."""
+    match = PATTERN_KEY.fullmatch(key)
+    if not match:
+        raise ValueError("키 형식 오류 (size_{N}_{idx} 형태가 아닙니다)")
+    size = int(match.group(1))
+    if size in filter_errors:
+        raise ValueError(f"size_{size} 필터 오류: {filter_errors[size]}")
+    if size not in filters:
+        raise ValueError(f"size_{size} 필터가 없습니다")
+    if not isinstance(case, dict) or "input" not in case or "expected" not in case:
+        raise ValueError("input 또는 expected 항목이 없습니다")
+    expected = normalize_label(case["expected"])
+    if expected is None:
+        raise ValueError(f"알 수 없는 expected 라벨 {case['expected']!r}")
+    pattern = build_matrix(case["input"])
+    if pattern.size != size:
+        raise ValueError(f"크기 불일치: 키의 N={size}, 패턴 {pattern.size}×{pattern.size}")
+    return pattern, expected, filters[size]
+
+
+def analyze_case(key, case, filters, filter_errors):
+    """패턴 1건을 판정해 출력한다. 반환 = 실패 사유, 통과면 None."""
+    print(f"--- {key} ---")
+    try:
+        pattern, expected, pair = load_case(key, case, filters, filter_errors)
+    except ValueError as error:
+        reason = f"[스키마] {error}"
+        print(f"판정: - | FAIL ({reason})")
+        return reason
+
+    cross_score = mac(pattern, pair[CROSS])
+    x_score = mac(pattern, pair[X])
+    verdict = {"A": CROSS, "B": X, UNDECIDED: UNDECIDED}[compare_scores(cross_score, x_score)]
+    print(f"Cross 점수: {cross_score}")
+    print(f"X 점수: {x_score}")
+    if verdict == expected:
+        print(f"판정: {verdict} | expected: {expected} | PASS")
+        return None
+    if verdict == UNDECIDED:
+        print(f"판정: {verdict} | expected: {expected} | FAIL (동점 규칙)")
+        return f"[동점] 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|차이| = {abs(cross_score - x_score):.3g})"
+    print(f"판정: {verdict} | expected: {expected} | FAIL")
+    return f"[판정 불일치] 판정 {verdict}, expected {expected}"
+
+
+def print_summary(total, failures):
+    section("[4] 결과 요약")
+    print(f"총 테스트: {total}개")
+    print(f"통과: {total - len(failures)}개")
+    print(f"실패: {len(failures)}개")
+    if failures:
+        print("실패 케이스:")
+        for key, reason in failures:
+            print(f"- {key}: {reason}")
+
+
+def run_json():
+    """모드 2: data.json의 패턴을 일괄 판정한다."""
+    data = load_json(DATA_PATH)
+    if not isinstance(data, dict):
+        if data is not None:
+            print("✗ data.json 최상위가 객체가 아닙니다")
+        return
+
+    section("[1] 필터 로드")
+    filters, filter_errors = load_filters(data.get("filters"))
+
+    section("[2] 패턴 분석 (라벨 정규화 적용)")
+    patterns = data.get("patterns")
+    if not isinstance(patterns, dict):
+        print("✗ patterns 항목이 없거나 객체가 아닙니다")
+        patterns = {}
+    failures = []
+    for key, case in patterns.items():
+        reason = analyze_case(key, case, filters, filter_errors)
+        if reason is not None:
+            failures.append((key, reason))
+
+    print_summary(len(patterns), failures)
+
+
 def select_mode():
     print("[모드 선택]")
     print("1. 사용자 입력 (3x3)")
@@ -179,6 +319,8 @@ def main():
     try:
         if select_mode() == "1":
             run_manual()
+        else:
+            run_json()
     except (KeyboardInterrupt, EOFError):
         print("\n입력이 중단되어 프로그램을 종료합니다.")
 
